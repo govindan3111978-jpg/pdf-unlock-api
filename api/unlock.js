@@ -1,8 +1,8 @@
-import createQpdf from '@jspawn/qpdf-wasm';
-import { Form } from 'multiparty';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+const createQpdf = require('@jspawn/qpdf-wasm');
+const { Form } = require('multiparty');
+const fs = require('fs');
+const path = require('path');
+const { pathToFileURL } = require('url');
 
 export const config = {
   api: { bodyParser: false },
@@ -27,21 +27,27 @@ export default async function handler(req, res) {
       const password = fields.password ? fields.password[0] : "";
       const inputBuffer = fs.readFileSync(file.path);
 
-      // --- NEW ESM PATH LOGIC ---
-      // This is the modern way to find files in ESM mode on Vercel
-      const __dirname = path.dirname(fileURLToPath(import.meta.url));
-      const wasmPath = path.join(__dirname, '../node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
+      // --- THE ULTIMATE FIX FOR "FAILED TO PARSE URL" ---
       
-      // Initialize QPDF using the absolute file URL
-      // In ESM mode, this "just works" without URL parsing errors
+      // 1. Get the absolute path
+      const wasmPath = path.resolve(process.cwd(), 'node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
+      
+      // 2. Convert to file:/// protocol (This is what Node.js 18+ requires)
+      const wasmFullUrl = pathToFileURL(wasmPath).href;
+
+      // 3. Read the binary data (Loading it manually is safer)
+      const wasmBinary = fs.readFileSync(wasmPath);
+
+      // 4. Initialize with BOTH the binary and the correctly formatted URL
       const qpdf = await createQpdf({
-        locateFile: () => wasmPath
+        wasmBinary: wasmBinary,
+        locateFile: () => wasmFullUrl
       });
-      // --------------------------
+      // --------------------------------------------------
 
       qpdf.FS.writeFile("input.pdf", new Uint8Array(inputBuffer));
 
-      // Argument Logic
+      // Argument Logic: --decrypt removes owner passwords (restrictions)
       const args = ["--decrypt", "input.pdf", "output.pdf"];
       if (password && password.trim() !== "") {
         args.unshift(`--password=${password}`);
@@ -59,7 +65,7 @@ export default async function handler(req, res) {
         res.setHeader('Content-Disposition', `attachment; filename=unlocked_${file.originalFilename}`);
         return res.send(Buffer.from(outputData));
       } else {
-        return res.status(400).json({ error: "Unlock failed. Incorrect password or invalid PDF." });
+        return res.status(400).json({ error: "Incorrect password. This file requires an 'Open Password'." });
       }
     } catch (error) {
       console.error(error);
