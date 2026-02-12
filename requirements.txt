@@ -1,3 +1,4 @@
 pikepdf
+pypdf
 flask
 flask-cors
