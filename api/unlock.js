@@ -1,14 +1,12 @@
-const createQpdf = require('@jspawn/qpdf-wasm');
-const { Form } = require('multiparty');
-const fs = require('fs');
-const fetch = require('node-fetch');
+import createQpdf from '@jspawn/qpdf-wasm';
+import { Form } from 'multiparty';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 export const config = {
   api: { bodyParser: false },
 };
-
-// Cache the engine in memory so we don't download it every single time
-let cachedWasmBinary = null;
 
 export default async function handler(req, res) {
   // CORS Headers
@@ -29,25 +27,21 @@ export default async function handler(req, res) {
       const password = fields.password ? fields.password[0] : "";
       const inputBuffer = fs.readFileSync(file.path);
 
-      // --- THE CLOUD-LOADER FIX ---
-      if (!cachedWasmBinary) {
-        // We download the engine from a reliable CDN
-        const response = await fetch('https://unpkg.com/@jspawn/qpdf-wasm@0.0.2/qpdf.wasm');
-        if (!response.ok) throw new Error("Failed to download PDF engine from CDN");
-        const arrayBuffer = await response.arrayBuffer();
-        cachedWasmBinary = Buffer.from(arrayBuffer);
-      }
-
-      // Initialize QPDF using the downloaded binary
+      // --- NEW ESM PATH LOGIC ---
+      // This is the modern way to find files in ESM mode on Vercel
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const wasmPath = path.join(__dirname, '../node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
+      
+      // Initialize QPDF using the absolute file URL
+      // In ESM mode, this "just works" without URL parsing errors
       const qpdf = await createQpdf({
-        wasmBinary: cachedWasmBinary,
-        locateFile: () => "" // Prevents the library from looking for local files
+        locateFile: () => wasmPath
       });
-      // ----------------------------
+      // --------------------------
 
       qpdf.FS.writeFile("input.pdf", new Uint8Array(inputBuffer));
 
-      // Instant Unlock Logic
+      // Argument Logic
       const args = ["--decrypt", "input.pdf", "output.pdf"];
       if (password && password.trim() !== "") {
         args.unshift(`--password=${password}`);
@@ -58,14 +52,14 @@ export default async function handler(req, res) {
       if (exitCode === 0) {
         const outputData = qpdf.FS.readFile("output.pdf");
         
-        // Cleanup temp upload
+        // Cleanup temp file
         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename=unlocked_${file.originalFilename}`);
         return res.send(Buffer.from(outputData));
       } else {
-        return res.status(400).json({ error: "Unlock failed. Password may be required for this file." });
+        return res.status(400).json({ error: "Unlock failed. Incorrect password or invalid PDF." });
       }
     } catch (error) {
       console.error(error);
