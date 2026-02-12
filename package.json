@@ -1,5 +1,5 @@
 {
-  "name": "pdf-unlock-backend",
+  "name": "pdf-unlocker",
   "version": "1.0.0",
   "dependencies": {
     "@jspawn/qpdf-wasm": "0.0.2",
