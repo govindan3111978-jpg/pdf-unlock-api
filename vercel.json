@@ -2,8 +2,7 @@
   "version": 2,
   "functions": {
     "api/unlock.js": {
-      "maxDuration": 20,
-      "memory": 1024
+      "includeFiles": "node_modules/@jspawn/qpdf-wasm/qpdf.wasm"
     }
   }
 }
