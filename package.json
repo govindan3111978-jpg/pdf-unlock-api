@@ -2,7 +2,7 @@
   "name": "pdf-unlock-backend",
   "version": "1.0.0",
   "dependencies": {
-    "@jspawn/qpdf-wasm": "0.0.2",
+    "node-qpdf-wasm": "1.0.1",
     "multiparty": "^4.2.3"
   }
 }
