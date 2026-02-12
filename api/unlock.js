@@ -1,15 +1,17 @@
-const createQpdf = require('@jspawn/qpdf-wasm');
-const { Form } = require('multiparty');
-const fs = require('fs');
-const path = require('path');
-const { pathToFileURL } = require('url');
+import createQpdf from '@jspawn/qpdf-wasm';
+import { Form } from 'multiparty';
+import fs from 'fs';
+import axios from 'axios';
 
 export const config = {
   api: { bodyParser: false },
 };
 
+// This variable stays in the server's RAM to make the tool fast
+let wasmEngineBuffer = null;
+
 export default async function handler(req, res) {
-  // CORS Headers
+  // 1. CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -27,27 +29,25 @@ export default async function handler(req, res) {
       const password = fields.password ? fields.password[0] : "";
       const inputBuffer = fs.readFileSync(file.path);
 
-      // --- THE ULTIMATE FIX FOR "FAILED TO PARSE URL" ---
-      
-      // 1. Get the absolute path
-      const wasmPath = path.resolve(process.cwd(), 'node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
-      
-      // 2. Convert to file:/// protocol (This is what Node.js 18+ requires)
-      const wasmFullUrl = pathToFileURL(wasmPath).href;
+      // --- STEP 1: DOWNLOAD ENGINE TO RAM ---
+      if (!wasmEngineBuffer) {
+        const response = await axios.get('https://unpkg.com/@jspawn/qpdf-wasm@0.0.2/qpdf.wasm', {
+          responseType: 'arraybuffer'
+        });
+        wasmEngineBuffer = Buffer.from(response.data);
+      }
 
-      // 3. Read the binary data (Loading it manually is safer)
-      const wasmBinary = fs.readFileSync(wasmPath);
-
-      // 4. Initialize with BOTH the binary and the correctly formatted URL
+      // --- STEP 2: INITIALIZE WITHOUT FILE SYSTEM ---
       const qpdf = await createQpdf({
-        wasmBinary: wasmBinary,
-        locateFile: () => wasmFullUrl
+        wasmBinary: wasmEngineBuffer,
+        // This prevents the "Failed to parse URL" and "ENOENT" errors
+        locateFile: () => "" 
       });
-      // --------------------------------------------------
 
+      // --- STEP 3: UNLOCK LOGIC ---
       qpdf.FS.writeFile("input.pdf", new Uint8Array(inputBuffer));
 
-      // Argument Logic: --decrypt removes owner passwords (restrictions)
+      // --decrypt removes owner restrictions automatically
       const args = ["--decrypt", "input.pdf", "output.pdf"];
       if (password && password.trim() !== "") {
         args.unshift(`--password=${password}`);
@@ -58,17 +58,17 @@ export default async function handler(req, res) {
       if (exitCode === 0) {
         const outputData = qpdf.FS.readFile("output.pdf");
         
-        // Cleanup temp file
+        // Clean up temp file
         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename=unlocked_${file.originalFilename}`);
         return res.send(Buffer.from(outputData));
       } else {
-        return res.status(400).json({ error: "Incorrect password. This file requires an 'Open Password'." });
+        return res.status(400).json({ error: "Unlock failed. Password required for this file." });
       }
     } catch (error) {
-      console.error(error);
+      console.error("Vercel Error:", error.message);
       return res.status(500).json({ error: "Server Error: " + error.message });
     }
   });
