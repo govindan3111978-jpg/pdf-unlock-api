@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@jspawn/qpdf-wasm": "0.0.2",
-    "multiparty": "^4.2.3"
+    "multiparty": "^4.2.3",
+    "node-fetch": "^2.6.7"
   }
 }
