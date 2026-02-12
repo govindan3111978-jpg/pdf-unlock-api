@@ -1,70 +1,54 @@
-from pypdf import PdfReader, PdfWriter
+from flask import Flask, request, send_file, jsonify
+from flask_cors import CORS
+import pikepdf
 import io
-from http.server import BaseHTTPRequestHandler
-import cgi
 
-class handler(BaseHTTPRequestHandler):
-    def do_OPTIONS(self):
-        # Handle CORS Preflight
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
+app = Flask(__name__)
+CORS(app)
 
-    def do_POST(self):
+@app.route('/api/unlock', methods=['POST'])
+def unlock_pdf():
+    try:
+        # Check if file exists in request
+        if 'file' not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+        
+        file = request.files['file']
+        password = request.form.get('password', '')
+
+        # Read the uploaded PDF into memory
+        input_data = file.read()
+        
         try:
-            # Parse the multipart form data
-            form = cgi.FieldStorage(
-                fp=self.rfile,
-                headers=self.headers,
-                environ={'REQUEST_METHOD': 'POST'}
-            )
-
-            if 'file' not in form:
-                self.send_error_msg(400, "No file uploaded")
-                return
-
-            file_item = form['file']
-            password = form.getvalue('password', '')
-
-            # Read PDF from the uploaded file
-            input_stream = io.BytesIO(file_item.file.read())
-            reader = PdfReader(input_stream)
-
-            # Attempt to decrypt if a password is provided
-            if reader.is_encrypted:
-                try:
-                    reader.decrypt(password)
-                except:
-                    self.send_error_msg(401, "Invalid Password")
-                    return
-
-            # Create a new PDF (this strips all restrictions/owner passwords)
-            writer = PdfWriter()
-            for page in reader.pages:
-                writer.add_page(page)
-
-            # Save to memory
-            output_stream = io.BytesIO()
-            writer.write(output_stream)
-            output_stream.seek(0)
-
-            # Send Response
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/pdf')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Content-Disposition', f'attachment; filename="unlocked.pdf"')
-            self.end_headers()
-            self.wfile.write(output_stream.read())
-
+            # pikepdf logic: 
+            # Opening the file with pikepdf automatically strips 
+            # 'Owner' passwords and restrictions (printing, copying, etc.)
+            if password.strip():
+                pdf = pikepdf.open(io.BytesIO(input_data), password=password)
+            else:
+                # This is the "Instant Unlock" magic
+                pdf = pikepdf.open(io.BytesIO(input_data))
+        except pikepdf.PasswordError:
+            return jsonify({"error": "This file is 'Open Locked'. Please enter the correct password."}), 401
         except Exception as e:
-            self.send_error_msg(500, str(e))
+            return jsonify({"error": f"PDF Engine Error: {str(e)}"}), 400
 
-    def send_error_msg(self, code, msg):
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        import json
-        self.wfile.write(json.dumps({"error": msg}).encode())
+        # Save the now-unrestricted PDF to a new buffer
+        output_buffer = io.BytesIO()
+        pdf.save(output_buffer)
+        output_buffer.seek(0)
+
+        # Send the file back to the browser
+        return send_file(
+            output_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"unlocked_{file.filename}"
+        )
+
+    except Exception as e:
+        return jsonify({"error": f"Server Error: {str(e)}"}), 500
+
+# This is required for Vercel to recognize the Flask app
+def handler(req, res):
+    return app(req, res)
