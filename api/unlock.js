@@ -27,25 +27,27 @@ export default async function handler(req, res) {
       const password = fields.password ? fields.password[0] : "";
       const inputBuffer = fs.readFileSync(file.path);
 
-      // --- NEW RELIABLE PATH RESOLUTION ---
-      // Try two common paths used by Vercel
-      const path1 = path.join(process.cwd(), 'node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
-      const path2 = path.join(__dirname, '../node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
+      // --- THE ULTIMATE FIX: MANUAL WASM LOADING ---
+      // We manually find and read the .wasm file into a Buffer
+      const wasmPath = path.resolve(process.cwd(), "node_modules/@jspawn/qpdf-wasm/qpdf.wasm");
       
-      let wasmPath = fs.existsSync(path1) ? path1 : path2;
-
       if (!fs.existsSync(wasmPath)) {
-        throw new Error(`WASM file not found. Checked: ${path1} and ${path2}`);
+        return res.status(500).json({ error: "System file qpdf.wasm not found at " + wasmPath });
       }
 
-      // Initialize QPDF without the "file://" prefix
+      const wasmBuffer = fs.readFileSync(wasmPath);
+
+      // We pass the binary data directly. This stops the library from trying 
+      // to create a URL, which was causing the error you saw.
       const qpdf = await createQpdf({
-        locateFile: () => wasmPath
+        wasmBinary: wasmBuffer
       });
-      // -------------------------------------
+      // ----------------------------------------------
 
       qpdf.FS.writeFile("input.pdf", new Uint8Array(inputBuffer));
 
+      // QPDF Instant Logic: --decrypt removes owner passwords (restrictions) 
+      // without needing the password entered.
       const args = ["--decrypt", "input.pdf", "output.pdf"];
       if (password && password.trim() !== "") {
         args.unshift(`--password=${password}`);
@@ -59,10 +61,10 @@ export default async function handler(req, res) {
         res.setHeader('Content-Disposition', `attachment; filename=unlocked_${file.originalFilename}`);
         return res.send(Buffer.from(outputData));
       } else {
-        return res.status(400).json({ error: "Unlock failed. The password might be incorrect." });
+        return res.status(400).json({ error: "Unlock failed. This file might have a strong User Password." });
       }
     } catch (error) {
-      console.error("Worker Error:", error.message);
+      console.error(error);
       return res.status(500).json({ error: "Server Error: " + error.message });
     }
   });
