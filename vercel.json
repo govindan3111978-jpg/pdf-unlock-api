@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/unlock.js": {
-      "includeFiles": "node_modules/@jspawn/qpdf-wasm/qpdf.wasm"
+      "includeFiles": "node_modules/@jspawn/qpdf-wasm/**"
     }
   }
 }
