@@ -1,4 +1,3 @@
-pikepdf
-pypdf
+pymupdf
 flask
 flask-cors
