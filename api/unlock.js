@@ -1,14 +1,17 @@
 const createQpdf = require('@jspawn/qpdf-wasm');
 const { Form } = require('multiparty');
 const fs = require('fs');
-const path = require('path');
+const fetch = require('node-fetch');
 
 export const config = {
   api: { bodyParser: false },
 };
 
+// Cache the engine in memory so we don't download it every single time
+let cachedWasmBinary = null;
+
 export default async function handler(req, res) {
-  // 1. Setup CORS
+  // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -26,49 +29,43 @@ export default async function handler(req, res) {
       const password = fields.password ? fields.password[0] : "";
       const inputBuffer = fs.readFileSync(file.path);
 
-      // --- THE ULTIMATE FIX: BYPASS FS.OPEN ---
-      
-      // Find the WASM file using a path that works in Vercel's build
-      const wasmPath = path.join(process.cwd(), 'node_modules', '@jspawn', 'qpdf-wasm', 'qpdf.wasm');
-      
-      if (!fs.existsSync(wasmPath)) {
-        throw new Error("Missing qpdf.wasm at " + wasmPath);
+      // --- THE CLOUD-LOADER FIX ---
+      if (!cachedWasmBinary) {
+        // We download the engine from a reliable CDN
+        const response = await fetch('https://unpkg.com/@jspawn/qpdf-wasm@0.0.2/qpdf.wasm');
+        if (!response.ok) throw new Error("Failed to download PDF engine from CDN");
+        const arrayBuffer = await response.arrayBuffer();
+        cachedWasmBinary = Buffer.from(arrayBuffer);
       }
 
-      // Read the file into a standard Node Buffer
-      const wasmBuffer = fs.readFileSync(wasmPath);
-
-      // Initialize QPDF
-      // We pass the wasmBinary directly. 
-      // IMPORTANT: We set locateFile to return null to prevent the engine from searching for files.
+      // Initialize QPDF using the downloaded binary
       const qpdf = await createQpdf({
-        wasmBinary: wasmBuffer,
-        locateFile: () => '' 
+        wasmBinary: cachedWasmBinary,
+        locateFile: () => "" // Prevents the library from looking for local files
       });
+      // ----------------------------
 
-      // Write the uploaded PDF to the virtual filesystem
       qpdf.FS.writeFile("input.pdf", new Uint8Array(inputBuffer));
 
-      // Argument Logic: --decrypt removes owner passwords (restrictions) instantly
+      // Instant Unlock Logic
       const args = ["--decrypt", "input.pdf", "output.pdf"];
       if (password && password.trim() !== "") {
         args.unshift(`--password=${password}`);
       }
 
-      // Execute QPDF
       const exitCode = qpdf.callMain(args);
 
       if (exitCode === 0) {
         const outputData = qpdf.FS.readFile("output.pdf");
         
-        // Clean up temp file
+        // Cleanup temp upload
         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename=unlocked_${file.originalFilename}`);
         return res.send(Buffer.from(outputData));
       } else {
-        return res.status(400).json({ error: "Incorrect password. This file requires a user password to open." });
+        return res.status(400).json({ error: "Unlock failed. Password may be required for this file." });
       }
     } catch (error) {
       console.error(error);
