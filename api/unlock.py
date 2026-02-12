@@ -13,23 +13,39 @@ def unlock_pdf():
             return jsonify({"error": "No file uploaded"}), 400
         
         file = request.files['file']
-        password = request.form.get('password', '')
-        
-        # Read the PDF
-        try:
-            if password.strip():
-                pdf = pikepdf.open(file, password=password)
-            else:
-                # Instant unlock (strips owner restrictions)
-                pdf = pikepdf.open(file)
-        except pikepdf.PasswordError:
-            return jsonify({"error": "Correct password required to open this file."}), 401
-        except Exception:
-            return jsonify({"error": "This PDF is either corrupted or unsupported."}), 400
+        user_provided_pass = request.form.get('password', '')
 
-        # Save to memory
+        # Read the file into memory
+        input_data = file.read()
+        file_stream = io.BytesIO(input_data)
+
+        pdf = None
+        
+        # --- AGGRESSIVE UNLOCK LOGIC ---
+        try:
+            # 1. Try opening with NO password (strips Owner/Restriction locks)
+            pdf = pikepdf.open(file_stream)
+        except pikepdf.PasswordError:
+            # 2. If that fails, try with the user-provided password
+            if user_provided_pass.strip():
+                try:
+                    file_stream.seek(0)
+                    pdf = pikepdf.open(file_stream, password=user_provided_pass)
+                except pikepdf.PasswordError:
+                    return jsonify({"error": "Incorrect password. This file is 'Open Locked'."}), 401
+            else:
+                # 3. If no password was provided and step 1 failed
+                return jsonify({"error": "This file requires an 'Open Password' to view the content."}), 401
+        except Exception as e:
+            return jsonify({"error": f"Could not read PDF: {str(e)}"}), 400
+
+        # Create the unlocked version
         output_buffer = io.BytesIO()
+        
+        # We save it without any encryption settings (this is what iLovePDF does)
         pdf.save(output_buffer)
+        pdf.close()
+        
         output_buffer.seek(0)
 
         return send_file(
@@ -40,8 +56,7 @@ def unlock_pdf():
         )
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Server Error: {str(e)}"}), 500
 
-# This allows Vercel to see the app
 if __name__ == "__main__":
     app.run()
