@@ -11,8 +11,8 @@ export default async function handler(req, res) {
   // CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
@@ -27,14 +27,22 @@ export default async function handler(req, res) {
       const password = fields.password ? fields.password[0] : "";
       const inputBuffer = fs.readFileSync(file.path);
 
-      // --- FIX FOR WASM PATH ERROR ---
-      // We resolve the absolute path and add file:// protocol to satisfy the internal URL parser
-      const wasmPath = path.join(process.cwd(), 'node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
+      // --- NEW RELIABLE PATH RESOLUTION ---
+      // Try two common paths used by Vercel
+      const path1 = path.join(process.cwd(), 'node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
+      const path2 = path.join(__dirname, '../node_modules/@jspawn/qpdf-wasm/qpdf.wasm');
       
+      let wasmPath = fs.existsSync(path1) ? path1 : path2;
+
+      if (!fs.existsSync(wasmPath)) {
+        throw new Error(`WASM file not found. Checked: ${path1} and ${path2}`);
+      }
+
+      // Initialize QPDF without the "file://" prefix
       const qpdf = await createQpdf({
-        locateFile: () => `file://${wasmPath}`
+        locateFile: () => wasmPath
       });
-      // -------------------------------
+      // -------------------------------------
 
       qpdf.FS.writeFile("input.pdf", new Uint8Array(inputBuffer));
 
@@ -51,10 +59,10 @@ export default async function handler(req, res) {
         res.setHeader('Content-Disposition', `attachment; filename=unlocked_${file.originalFilename}`);
         return res.send(Buffer.from(outputData));
       } else {
-        return res.status(400).json({ error: "Incorrect password or corrupted file." });
+        return res.status(400).json({ error: "Unlock failed. The password might be incorrect." });
       }
     } catch (error) {
-      console.error(error);
+      console.error("Worker Error:", error.message);
       return res.status(500).json({ error: "Server Error: " + error.message });
     }
   });
