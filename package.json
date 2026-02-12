@@ -1,0 +1,9 @@
+{
+  "name": "pdf-unlock-backend",
+  "version": "1.0.0",
+  "main": "api/unlock.js",
+  "dependencies": {
+    "@jspawn/qpdf-wasm": "0.0.2",
+    "multiparty": "^4.2.3"
+  }
+}
