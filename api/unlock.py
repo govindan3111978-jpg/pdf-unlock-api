@@ -1,6 +1,6 @@
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import pikepdf
+import pypdf
 import io
 
 app = Flask(__name__)
@@ -10,47 +10,59 @@ CORS(app)
 def unlock_pdf():
     try:
         if 'file' not in request.files:
-            return jsonify({"error": "No file"}), 400
+            return jsonify({"error": "No file uploaded"}), 400
         
         file = request.files['file']
         user_pass = request.form.get('password', '').strip()
         
-        input_data = file.read()
-        pdf = None
+        # Read the file into memory
+        input_data = io.BytesIO(file.read())
         
-        # --- THE iLovePDF LOGIC ---
-        # 1. Try opening normally (Strips most restrictions)
         try:
-            pdf = pikepdf.open(io.BytesIO(input_data))
-        except pikepdf.PasswordError:
-            # 2. Try with an empty string password (fixes 'fake' locks)
-            try:
-                pdf = pikepdf.open(io.BytesIO(input_data), password="")
-            except pikepdf.PasswordError:
-                # 3. Only if that fails, try the user's password
-                if user_pass:
-                    try:
-                        pdf = pikepdf.open(io.BytesIO(input_data), password=user_pass)
-                    except pikepdf.PasswordError:
-                        return jsonify({"error": "Wrong password"}), 401
-                else:
-                    return jsonify({"error": "Password required"}), 401
+            reader = pypdf.PdfReader(input_data)
+            
+            # If encrypted, try empty string first (iLovePDF logic)
+            if reader.is_encrypted:
+                # Try empty string bypass
+                status = reader.decrypt("")
+                
+                # If that fails, try the user provided password
+                if status == 0 and user_pass:
+                    status = reader.decrypt(user_pass)
+                
+                # If it's still locked, then it's a REAL user password
+                if status == 0:
+                    return jsonify({"error": "This file is truly password protected. Please enter the Open Password."}), 401
 
-        # Save without encryption
-        output_buffer = io.BytesIO()
-        pdf.save(output_buffer)
-        pdf.close()
-        output_buffer.seek(0)
+            # --- THE RECONSTRUCTION MAGIC ---
+            # Create a brand new PDF writer
+            writer = pypdf.PdfWriter()
+            
+            # Copy pages one by one to a new document
+            # This completely ignores and strips all original restrictions
+            for page in reader.pages:
+                writer.add_page(page)
+            
+            # Clean up metadata that might contain "Locked" flags
+            writer.add_metadata({}) 
 
-        return send_file(
-            output_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f"unlocked_{file.filename}"
-        )
+            # Save to buffer
+            output_buffer = io.BytesIO()
+            writer.write(output_buffer)
+            output_buffer.seek(0)
+
+            return send_file(
+                output_buffer,
+                mimetype='application/pdf',
+                as_attachment=True,
+                download_name=f"unlocked_{file.filename}"
+            )
+
+        except Exception as e:
+            return jsonify({"error": f"Bypass failed: {str(e)}"}), 400
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Server Error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run()
