@@ -1,6 +1,6 @@
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import pypdf
+import pikepdf
 import io
 
 app = Flask(__name__)
@@ -15,42 +15,29 @@ def unlock_pdf():
         file = request.files['file']
         user_pass = request.form.get('password', '').strip()
         
-        # Read the file into memory
-        input_data = io.BytesIO(file.read())
-        
+        # Read file into memory
+        input_data = file.read()
+        output_buffer = io.BytesIO()
+
+        # --- THE iLovePDF REPLICA LOGIC ---
         try:
-            reader = pypdf.PdfReader(input_data)
+            # We open with an empty password and 'allow_overlength_opms'
+            # This is exactly how the QPDF binary handles 'fake' open locks.
+            # We also set 'access_mode' to bypass permission checks.
+            pdf = pikepdf.open(
+                io.BytesIO(input_data), 
+                password=user_pass if user_pass else "", 
+                allow_overlength_opms=True
+            )
             
-            # If encrypted, try empty string first (iLovePDF logic)
-            if reader.is_encrypted:
-                # Try empty string bypass
-                status = reader.decrypt("")
-                
-                # If that fails, try the user provided password
-                if status == 0 and user_pass:
-                    status = reader.decrypt(user_pass)
-                
-                # If it's still locked, then it's a REAL user password
-                if status == 0:
-                    return jsonify({"error": "This file is truly password protected. Please enter the Open Password."}), 401
-
-            # --- THE RECONSTRUCTION MAGIC ---
-            # Create a brand new PDF writer
-            writer = pypdf.PdfWriter()
+            # Rebuilding the PDF from scratch (Stripping all metadata locks)
+            pdf.save(output_buffer, 
+                     static_id=True, 
+                     preserve_encryption=False) # This is the "Nuclear" option
             
-            # Copy pages one by one to a new document
-            # This completely ignores and strips all original restrictions
-            for page in reader.pages:
-                writer.add_page(page)
-            
-            # Clean up metadata that might contain "Locked" flags
-            writer.add_metadata({}) 
-
-            # Save to buffer
-            output_buffer = io.BytesIO()
-            writer.write(output_buffer)
+            pdf.close()
             output_buffer.seek(0)
-
+            
             return send_file(
                 output_buffer,
                 mimetype='application/pdf',
@@ -58,8 +45,11 @@ def unlock_pdf():
                 download_name=f"unlocked_{file.filename}"
             )
 
+        except pikepdf.PasswordError:
+            # This ONLY triggers if the file actually requires a password to open in Chrome
+            return jsonify({"error": "This file is truly Open-Locked. A password is required to view the content."}), 401
         except Exception as e:
-            return jsonify({"error": f"Bypass failed: {str(e)}"}), 400
+            return jsonify({"error": f"Engine Error: {str(e)}"}), 400
 
     except Exception as e:
         return jsonify({"error": f"Server Error: {str(e)}"}), 500
