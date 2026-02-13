@@ -1,6 +1,6 @@
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import pikepdf
+import fitz  # PyMuPDF
 import io
 
 app = Flask(__name__)
@@ -15,52 +15,47 @@ def unlock_pdf():
         file = request.files['file']
         user_pass = request.form.get('password', '').strip()
         
+        # Read file into memory
         input_data = file.read()
-        pdf = None
         
-        # --- THE MASTER BYPASS LOOP ---
-        # We try these passwords in order:
-        # 1. No password (None)
-        # 2. Empty string ("")
-        # 3. The password provided by the user
-        passwords_to_try = [None, "", user_pass]
-        
-        for p in passwords_to_try:
-            try:
-                if p is None:
-                    pdf = pikepdf.open(io.BytesIO(input_data))
-                else:
-                    pdf = pikepdf.open(io.BytesIO(input_data), password=p)
-                
-                # If we reached here, the PDF is open!
-                break 
-            except pikepdf.PasswordError:
-                continue
-            except Exception:
-                continue
+        # --- THE TOTAL RECONSTRUCTION METHOD ---
+        try:
+            # 1. Open the source document
+            src_doc = fitz.open(stream=input_data, filetype="pdf")
+            
+            # 2. If it's encrypted, try to bypass it
+            if src_doc.is_encrypted:
+                # Try empty password, then user password
+                if not src_doc.authenticate("") and not src_doc.authenticate(user_pass):
+                    # Only if BOTH fail do we report a password error
+                    return jsonify({"error": "This file is truly Open-Locked. Please provide the password."}), 401
+            
+            # 3. Create a BRAND NEW document (the 'Clean' file)
+            dest_doc = fitz.open()
+            
+            # 4. Copy every page from the source to the destination
+            # This 'strips' all original security settings completely
+            dest_doc.insert_pdf(src_doc)
+            
+            # 5. Save the new document to a buffer
+            output_buffer = io.BytesIO()
+            dest_doc.save(output_buffer)
+            
+            src_doc.close()
+            dest_doc.close()
+            
+            output_buffer.seek(0)
+            
+            return send_file(
+                output_buffer,
+                mimetype='application/pdf',
+                as_attachment=True,
+                download_name=f"unlocked_{file.filename}"
+            )
 
-        if pdf is None:
-            return jsonify({
-                "error": "This file is strictly 'Open Locked'. Please enter the password to view the content."
-            }), 401
-
-        # SUCCESS: Save a completely unencrypted copy
-        output_buffer = io.BytesIO()
-        
-        # iLovePDF Logic: Save with NO encryption metadata
-        pdf.save(output_buffer, 
-                 static_id=True, 
-                 encryption=False)
-        
-        pdf.close()
-        output_buffer.seek(0)
-
-        return send_file(
-            output_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f"unlocked_{file.filename}"
-        )
+        except Exception as e:
+            # Fallback for very specific encryption types
+            return jsonify({"error": f"Bypass failed: {str(e)}"}), 400
 
     except Exception as e:
         return jsonify({"error": f"Server Error: {str(e)}"}), 500
