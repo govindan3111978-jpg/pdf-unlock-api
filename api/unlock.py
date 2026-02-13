@@ -14,32 +14,46 @@ def unlock_pdf():
         
         file = request.files['file']
         user_pass = request.form.get('password', '').strip()
+        
+        # Read the file into memory once
         input_data = file.read()
         
-        # Aggressive Bypass Logic
+        # Common default passwords to try automatically
         ghost_passwords = [None, "", "password", "123456", "1234", "0000"]
         if user_pass:
             ghost_passwords.insert(0, user_pass)
 
         pdf = None
+        last_error = "Unknown Error"
+
         for attempt_pass in ghost_passwords:
             try:
+                # IMPORTANT: Create a fresh stream for every attempt
+                # This fixes the "Unexpected Error" crash
+                stream = io.BytesIO(input_data)
+                
                 if attempt_pass is None:
-                    pdf = pikepdf.open(io.BytesIO(input_data))
+                    pdf = pikepdf.open(stream)
                 else:
-                    pdf = pikepdf.open(io.BytesIO(input_data), password=attempt_pass)
+                    pdf = pikepdf.open(stream, password=attempt_pass)
+                
+                # If it opens, stop the loop
                 break
-            except:
+            except pikepdf.PasswordError:
+                last_error = "Password required"
+                continue
+            except Exception as e:
+                last_error = str(e)
                 continue
 
         if pdf is None:
-            # BRANDING REMOVED: Generic professional error message
-            return jsonify({
-                "error": "This file is strongly encrypted with a User Password. Please provide the Open Password manually to decrypt the content."
-            }), 401
+            if "Password" in last_error or "password" in last_error:
+                return jsonify({"error": "This file is protected by a strong User Password. Please provide the correct password to decrypt the content."}), 401
+            else:
+                return jsonify({"error": "The PDF file is corrupted or uses an unsupported encryption format."}), 400
 
+        # Success: Save as a clean file
         output_buffer = io.BytesIO()
-        # Strip all encryption and restrictions
         pdf.save(output_buffer, preserve_encryption=False, static_id=True)
         pdf.close()
         output_buffer.seek(0)
@@ -52,7 +66,8 @@ def unlock_pdf():
         )
 
     except Exception as e:
-        return jsonify({"error": "An unexpected error occurred during processing."}), 500
+        # If the file is too big for Vercel (over 5MB), it might hit a timeout
+        return jsonify({"error": "The server was unable to process this file. It might be too large or complex."}), 500
 
 if __name__ == "__main__":
     app.run()
