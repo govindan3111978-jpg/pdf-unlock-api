@@ -1,6 +1,6 @@
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import fitz  # This is PyMuPDF
+import pikepdf
 import io
 
 app = Flask(__name__)
@@ -16,47 +16,51 @@ def unlock_pdf():
         user_pass = request.form.get('password', '').strip()
         
         input_data = file.read()
+        pdf = None
         
-        # --- THE "FORCE-OPEN" STRATEGY ---
-        try:
-            # 1. Open the document from memory
-            doc = fitz.open(stream=input_data, filetype="pdf")
-            
-            # 2. If it's encrypted, try to force it open with a blank password
-            # (Many 'restricted' files actually use an empty string as the master key)
-            if doc.is_encrypted:
-                # Try empty string, then try the user provided password
-                success = doc.authenticate("")
-                if not success and user_pass:
-                    success = doc.authenticate(user_pass)
+        # --- THE MASTER BYPASS LOOP ---
+        # We try these passwords in order:
+        # 1. No password (None)
+        # 2. Empty string ("")
+        # 3. The password provided by the user
+        passwords_to_try = [None, "", user_pass]
+        
+        for p in passwords_to_try:
+            try:
+                if p is None:
+                    pdf = pikepdf.open(io.BytesIO(input_data))
+                else:
+                    pdf = pikepdf.open(io.BytesIO(input_data), password=p)
                 
-                if not success:
-                    return jsonify({"error": "This file is strictly 'Open Locked'. Please enter the correct password."}), 401
-            
-            # 3. RECONSTRUCTION: 
-            # We save the file with NO encryption. This strips all permissions,
-            # owner passwords, and viewing restrictions in one go.
-            output_buffer = io.BytesIO()
-            
-            # This is the "iLovePDF" magic: Save with encryption=0
-            doc.save(output_buffer, 
-                     garbage=4, 
-                     deflate=True, 
-                     clean=True, 
-                     encryption=fitz.PDF_ENCRYPT_NONE)
-            
-            doc.close()
-            output_buffer.seek(0)
-            
-            return send_file(
-                output_buffer,
-                mimetype='application/pdf',
-                as_attachment=True,
-                download_name=f"unlocked_{file.filename}"
-            )
+                # If we reached here, the PDF is open!
+                break 
+            except pikepdf.PasswordError:
+                continue
+            except Exception:
+                continue
 
-        except Exception as e:
-            return jsonify({"error": f"PDF Engine failed to force open: {str(e)}"}), 400
+        if pdf is None:
+            return jsonify({
+                "error": "This file is strictly 'Open Locked'. Please enter the password to view the content."
+            }), 401
+
+        # SUCCESS: Save a completely unencrypted copy
+        output_buffer = io.BytesIO()
+        
+        # iLovePDF Logic: Save with NO encryption metadata
+        pdf.save(output_buffer, 
+                 static_id=True, 
+                 encryption=False)
+        
+        pdf.close()
+        output_buffer.seek(0)
+
+        return send_file(
+            output_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"unlocked_{file.filename}"
+        )
 
     except Exception as e:
         return jsonify({"error": f"Server Error: {str(e)}"}), 500
