@@ -14,42 +14,48 @@ def unlock_pdf():
         
         file = request.files['file']
         user_pass = request.form.get('password', '').strip()
-        
-        # Read file into memory
         input_data = file.read()
+        
+        # --- THE iLovePDF "GHOST BYPASS" LIST ---
+        # These are common default passwords used by PDF creators and printers
+        # that allow tools like iLovePDF to open files "instantly"
+        ghost_passwords = [
+            None, "", "password", "123456", "1234", "owner", 
+            "admin", "0000", "user", "root", "pdf", "1111"
+        ]
+        
+        # Add the user's provided password to the front of the list
+        if user_pass:
+            ghost_passwords.insert(0, user_pass)
+
+        pdf = None
+        for attempt_pass in ghost_passwords:
+            try:
+                if attempt_pass is None:
+                    pdf = pikepdf.open(io.BytesIO(input_data))
+                else:
+                    pdf = pikepdf.open(io.BytesIO(input_data), password=attempt_pass)
+                
+                # If we get here, we successfully bypassed it!
+                break
+            except (pikepdf.PasswordError, Exception):
+                continue
+
+        if pdf is None:
+            return jsonify({"error": "This file is strongly encrypted. iLovePDF likely uses a massive database of passwords for this. Please provide the Open Password manually."}), 401
+
+        # Save as a clean, unencrypted file
         output_buffer = io.BytesIO()
+        pdf.save(output_buffer, preserve_encryption=False)
+        pdf.close()
+        output_buffer.seek(0)
 
-        # --- THE iLovePDF REPLICA LOGIC ---
-        try:
-            # We open with an empty password and 'allow_overlength_opms'
-            # This is exactly how the QPDF binary handles 'fake' open locks.
-            # We also set 'access_mode' to bypass permission checks.
-            pdf = pikepdf.open(
-                io.BytesIO(input_data), 
-                password=user_pass if user_pass else "", 
-                allow_overlength_opms=True
-            )
-            
-            # Rebuilding the PDF from scratch (Stripping all metadata locks)
-            pdf.save(output_buffer, 
-                     static_id=True, 
-                     preserve_encryption=False) # This is the "Nuclear" option
-            
-            pdf.close()
-            output_buffer.seek(0)
-            
-            return send_file(
-                output_buffer,
-                mimetype='application/pdf',
-                as_attachment=True,
-                download_name=f"unlocked_{file.filename}"
-            )
-
-        except pikepdf.PasswordError:
-            # This ONLY triggers if the file actually requires a password to open in Chrome
-            return jsonify({"error": "This file is truly Open-Locked. A password is required to view the content."}), 401
-        except Exception as e:
-            return jsonify({"error": f"Engine Error: {str(e)}"}), 400
+        return send_file(
+            output_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"unlocked_{file.filename}"
+        )
 
     except Exception as e:
         return jsonify({"error": f"Server Error: {str(e)}"}), 500
