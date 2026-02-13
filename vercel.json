@@ -1,8 +1,12 @@
 {
-  "rewrites": [
-    {
-      "source": "/api/unlock",
-      "destination": "/api/unlock.py"
+  "version": 2,
+  "functions": {
+    "api/unlock.py": {
+      "maxDuration": 30,
+      "memory": 1024
     }
+  },
+  "rewrites": [
+    { "source": "/api/unlock", "destination": "/api/unlock.py" }
   ]
 }
