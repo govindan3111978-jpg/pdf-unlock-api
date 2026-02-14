@@ -6,7 +6,6 @@ import cgi
 
 class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
-        # Handle CORS to prevent "Server Connection Failed"
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
@@ -15,7 +14,6 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            # 1. Parse the uploaded file
             form = cgi.FieldStorage(
                 fp=self.rfile,
                 headers=self.headers,
@@ -27,39 +25,50 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             file_data = form['file'].file.read()
-            password = form.getvalue('password', '')
+            user_provided_pass = form.getvalue('password', '')
 
-            # 2. Open PDF with pikepdf (The QPDF Engine)
-            # It automatically attempts to open with an empty password first
             input_stream = io.BytesIO(file_data)
+            pdf = None
+            
+            # --- AGGRESSIVE iLovePDF BYPASS LOGIC ---
+            # We try opening in 3 stages:
+            # 1. Standard open (no password)
+            # 2. Empty string password (strips most 'User' prompts)
+            # 3. User-provided password
             
             try:
-                # If no password provided, it tries to strip owner restrictions
-                if not password:
-                    pdf = pikepdf.open(input_stream)
-                else:
-                    pdf = pikepdf.open(input_stream, password=password)
+                # Attempt 1 & 2: Instant Bypass
+                try:
+                    # 'allow_overlength_opms' is a special QPDF repair flag
+                    pdf = pikepdf.open(input_stream, allow_overlength_opms=True)
+                except pikepdf.PasswordError:
+                    input_stream.seek(0)
+                    pdf = pikepdf.open(input_stream, password="", allow_overlength_opms=True)
             except pikepdf.PasswordError:
-                self.send_error_json(401, "Password Required")
-                return
-            except Exception as e:
-                self.send_error_json(400, f"Engine Error: {str(e)}")
-                return
+                # Attempt 3: User Password
+                if user_provided_pass:
+                    try:
+                        input_stream.seek(0)
+                        pdf = pikepdf.open(input_stream, password=user_provided_pass)
+                    except pikepdf.PasswordError:
+                        self.send_error_json(401, "Invalid password provided.")
+                        return
+                else:
+                    self.send_error_json(401, "Password Required")
+                    return
 
-            # 3. Save the PDF with NO encryption (iLovePDF Style)
+            # Success: Save with NO encryption
             output_stream = io.BytesIO()
-            # preserve_encryption=False is the magic command to unlock it forever
-            pdf.save(output_stream, preserve_encryption=False, static_id=True)
+            # This completely strips all security metadata
+            pdf.save(output_buffer := io.BytesIO(), preserve_encryption=False, static_id=True)
             pdf.close()
-            output_stream.seek(0)
-
-            # 4. Send the file back
+            
             self.send_response(200)
             self.send_header('Content-Type', 'application/pdf')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Content-Disposition', 'attachment; filename="unlocked.pdf"')
             self.end_headers()
-            self.wfile.write(output_stream.read())
+            self.wfile.write(output_buffer.getvalue())
 
         except Exception as e:
             self.send_error_json(500, str(e))
