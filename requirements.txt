@@ -1,3 +1,1 @@
 pypdf
-flask
-flask-cors
