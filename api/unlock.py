@@ -1,12 +1,12 @@
 import io
 import json
-from pypdf import PdfReader, PdfWriter
+import pikepdf
 from http.server import BaseHTTPRequestHandler
 import cgi
 
 class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
-        # This part fixes the "Server connection failed" / CORS error
+        # Handle CORS to prevent "Server Connection Failed"
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
@@ -15,7 +15,7 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            # Parse the uploaded file
+            # 1. Parse the uploaded file
             form = cgi.FieldStorage(
                 fp=self.rfile,
                 headers=self.headers,
@@ -29,37 +29,31 @@ class handler(BaseHTTPRequestHandler):
             file_data = form['file'].file.read()
             password = form.getvalue('password', '')
 
-            # Process PDF
+            # 2. Open PDF with pikepdf (The QPDF Engine)
+            # It automatically attempts to open with an empty password first
             input_stream = io.BytesIO(file_data)
-            reader = PdfReader(input_stream)
+            
+            try:
+                # If no password provided, it tries to strip owner restrictions
+                if not password:
+                    pdf = pikepdf.open(input_stream)
+                else:
+                    pdf = pikepdf.open(input_stream, password=password)
+            except pikepdf.PasswordError:
+                self.send_error_json(401, "Password Required")
+                return
+            except Exception as e:
+                self.send_error_json(400, f"Engine Error: {str(e)}")
+                return
 
-            if reader.is_encrypted:
-                # Try empty password, then user password
-                success = False
-                try:
-                    reader.decrypt("")
-                    success = True
-                except:
-                    try:
-                        reader.decrypt(password)
-                        success = True
-                    except:
-                        pass
-                
-                if not success:
-                    self.send_error_json(401, "Password Required")
-                    return
-
-            # Reconstruct PDF (iLovePDF Style)
-            writer = PdfWriter()
-            for page in reader.pages:
-                writer.add_page(page)
-
+            # 3. Save the PDF with NO encryption (iLovePDF Style)
             output_stream = io.BytesIO()
-            writer.write(output_stream)
+            # preserve_encryption=False is the magic command to unlock it forever
+            pdf.save(output_stream, preserve_encryption=False, static_id=True)
+            pdf.close()
             output_stream.seek(0)
 
-            # Send the file
+            # 4. Send the file back
             self.send_response(200)
             self.send_header('Content-Type', 'application/pdf')
             self.send_header('Access-Control-Allow-Origin', '*')
