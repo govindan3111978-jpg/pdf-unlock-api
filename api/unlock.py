@@ -1,60 +1,78 @@
-from flask import Flask, request, send_file, jsonify
-from flask_cors import CORS
-import pypdf
 import io
+import json
+from pypdf import PdfReader, PdfWriter
+from http.server import BaseHTTPRequestHandler
+import cgi
 
-app = Flask(__name__)
-CORS(app)
+class handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        # This part fixes the "Server connection failed" / CORS error
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
 
-@app.route('/api/unlock', methods=['POST'])
-def unlock_pdf():
-    try:
-        if 'file' not in request.files:
-            return jsonify({"error": "No file uploaded"}), 400
-        
-        file = request.files['file']
-        user_pass = request.form.get('password', '').strip()
-        
-        # Read the PDF into memory
-        input_stream = io.BytesIO(file.read())
-        
+    def do_POST(self):
         try:
-            reader = pypdf.PdfReader(input_stream)
-            
-            # --- THE REAL DECRYPTION LOGIC ---
-            if reader.is_encrypted:
-                # Try opening with an empty password (iLovePDF method)
-                # If that fails, use the user's password
-                try:
-                    reader.decrypt(user_pass if user_pass else "")
-                except:
-                    return jsonify({"error": "Incorrect password. This file is view-locked."}), 401
+            # Parse the uploaded file
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={'REQUEST_METHOD': 'POST'}
+            )
 
-            # Create a brand new PDF writer
-            writer = pypdf.PdfWriter()
-            
-            # We copy pages and DECRYPT them in the process
+            if 'file' not in form:
+                self.send_error_json(400, "No file uploaded")
+                return
+
+            file_data = form['file'].file.read()
+            password = form.getvalue('password', '')
+
+            # Process PDF
+            input_stream = io.BytesIO(file_data)
+            reader = PdfReader(input_stream)
+
+            if reader.is_encrypted:
+                # Try empty password, then user password
+                success = False
+                try:
+                    reader.decrypt("")
+                    success = True
+                except:
+                    try:
+                        reader.decrypt(password)
+                        success = True
+                    except:
+                        pass
+                
+                if not success:
+                    self.send_error_json(401, "Password Required")
+                    return
+
+            # Reconstruct PDF (iLovePDF Style)
+            writer = PdfWriter()
             for page in reader.pages:
                 writer.add_page(page)
 
-            # Save the clean PDF to a buffer
-            output_buffer = io.BytesIO()
-            writer.write(output_buffer)
-            output_buffer.seek(0)
+            output_stream = io.BytesIO()
+            writer.write(output_stream)
+            output_stream.seek(0)
 
-            return send_file(
-                output_buffer,
-                mimetype='application/pdf',
-                as_attachment=True,
-                download_name=f"unlocked_{file.filename}"
-            )
+            # Send the file
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/pdf')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Content-Disposition', 'attachment; filename="unlocked.pdf"')
+            self.end_headers()
+            self.wfile.write(output_stream.read())
 
         except Exception as e:
-            return jsonify({"error": f"Process failed: {str(e)}"}), 400
+            self.send_error_json(500, str(e))
 
-    except Exception as e:
-        return jsonify({"error": f"Server Error: {str(e)}"}), 500
-
-# Required for Vercel
-def handler(req, res):
-    return app(req, res)
+    def send_error_json(self, code, message):
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": message}).encode())
