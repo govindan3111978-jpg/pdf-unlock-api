@@ -31,11 +31,11 @@ class handler(BaseHTTPRequestHandler):
             pdf = None
             
             # --- STABLE BYPASS LOGIC ---
-            # Attempt 1: Standard Open (No password)
             try:
+                # Attempt 1: Standard Open (No password)
                 pdf = pikepdf.open(input_stream)
             except pikepdf.PasswordError:
-                # Attempt 2: Empty string password (strips many "fake" locks)
+                # Attempt 2: Empty string password
                 try:
                     input_stream.seek(0)
                     pdf = pikepdf.open(input_stream, password="")
@@ -52,9 +52,11 @@ class handler(BaseHTTPRequestHandler):
                         self.send_error_json(401, "Password Required")
                         return
 
-            # Success: Save with NO encryption metadata
+            # --- THE STABLE SAVE ---
             output_buffer = io.BytesIO()
-            pdf.save(output_buffer, preserve_encryption=False, static_id=True)
+            # In the latest pikepdf, a simple .save() on a decrypted 
+            # object automatically saves it as UNLOCKED.
+            pdf.save(output_buffer)
             pdf.close()
             
             self.send_response(200)
